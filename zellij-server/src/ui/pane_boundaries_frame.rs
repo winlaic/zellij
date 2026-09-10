@@ -233,18 +233,32 @@ impl PaneFrame {
         let has_scroll = self.scroll_position.0 > 0 || self.scroll_position.1 > 0;
         if has_scroll && self.is_selectable {
             // TODO: don't show SCROLL at all for plugins
-            let pin_indication = if self.is_floating && self.is_selectable {
-                self.render_pinned_indication(max_length)
+            let close_indication = if self.is_floating && self.is_selectable {
+                self.render_close_indication(max_length)
             } else {
                 None
-            }; // no pin indication for tiled panes
-            let space_for_scroll_indication = pin_indication
+            };
+            let space_after_close = close_indication
                 .as_ref()
                 .map(|(_, length)| max_length.saturating_sub(*length + 1))
                 .unwrap_or(max_length);
+            let pin_indication = if self.is_floating && self.is_selectable {
+                self.render_pinned_indication(space_after_close)
+            } else {
+                None
+            }; // no pin indication for tiled panes
+            let space_for_scroll_indication = match (&pin_indication, &close_indication) {
+                (Some((_, pin_len)), Some((_, close_len))) => {
+                    max_length.saturating_sub(*pin_len + *close_len + 2)
+                },
+                (Some((_, pin_len)), None) => max_length.saturating_sub(*pin_len + 1),
+                (None, Some((_, close_len))) => max_length.saturating_sub(*close_len + 1),
+                (None, None) => max_length,
+            };
             let scroll_indication = self.render_scroll_indication(space_for_scroll_indication);
-            match (pin_indication, scroll_indication) {
+            match (close_indication, pin_indication, scroll_indication) {
                 (
+                    Some((mut close_indication, close_indication_len)),
                     Some((mut pin_indication, pin_indication_len)),
                     Some((mut scroll_indication, scroll_indication_len)),
                 ) => {
@@ -252,14 +266,52 @@ impl PaneFrame {
                     let mut separator = foreground_color(&format!("|"), self.color);
                     characters.append(&mut separator);
                     characters.append(&mut pin_indication);
+                    characters.append(&mut close_indication);
+                    Some((
+                        characters,
+                        close_indication_len + pin_indication_len + scroll_indication_len + 1,
+                    ))
+                },
+                (Some((close_indication, close_indication_len)), Some((pin_indication, pin_indication_len)), None) => {
+                    let mut characters = pin_indication;
+                    characters.extend(close_indication);
+                    Some((characters, close_indication_len + pin_indication_len))
+                },
+                (Some((mut close_indication, close_indication_len)), None, Some((mut scroll_indication, scroll_indication_len))) => {
+                    let mut characters: Vec<_> = scroll_indication.drain(..).collect();
+                    let mut separator = foreground_color(&format!("|"), self.color);
+                    characters.append(&mut separator);
+                    characters.append(&mut close_indication);
+                    Some((characters, close_indication_len + scroll_indication_len + 1))
+                },
+                (Some(close_indication), None, None) => Some(close_indication),
+                (None, Some((mut pin_indication, pin_indication_len)), Some((mut scroll_indication, scroll_indication_len))) => {
+                    let mut characters: Vec<_> = scroll_indication.drain(..).collect();
+                    let mut separator = foreground_color(&format!("|"), self.color);
+                    characters.append(&mut separator);
+                    characters.append(&mut pin_indication);
                     Some((characters, pin_indication_len + scroll_indication_len + 1))
                 },
-                (Some(pin_indication), None) => Some(pin_indication),
-                (None, Some(scroll_indication)) => Some(scroll_indication),
+                (None, Some(pin_indication), None) => Some(pin_indication),
+                (None, None, Some(scroll_indication)) => Some(scroll_indication),
                 _ => None,
             }
         } else if self.is_floating && self.is_selectable {
-            self.render_pinned_indication(max_length)
+            let close_indication = self.render_close_indication(max_length);
+            let space_after_close = close_indication
+                .as_ref()
+                .map(|(_, length)| max_length.saturating_sub(*length))
+                .unwrap_or(max_length);
+            let pin_indication = self.render_pinned_indication(space_after_close);
+            match (close_indication, pin_indication) {
+                (Some((mut close_indication, close_len)), Some((mut pin_indication, pin_len))) => {
+                    pin_indication.append(&mut close_indication);
+                    Some((pin_indication, close_len + pin_len))
+                },
+                (Some(close_indication), None) => Some(close_indication),
+                (None, Some(pin_indication)) => Some(pin_indication),
+                _ => None,
+            }
         } else {
             None
         }
@@ -298,12 +350,34 @@ impl PaneFrame {
         max_length: usize,
     ) -> Option<(Vec<TerminalCharacter>, usize)> {
         let is_checked = if self.is_pinned { '+' } else { ' ' };
-        let full_indication = format!(" PIN [{}] ", is_checked);
+        let full_indication = format!(" [{}] ", is_checked);
         let full_indication_len = full_indication.chars().count();
         if full_indication_len <= max_length {
             Some((
                 foreground_color(&full_indication, self.color),
                 full_indication_len,
+            ))
+        } else {
+            None
+        }
+    }
+    fn render_close_indication(
+        &self,
+        max_length: usize,
+    ) -> Option<(Vec<TerminalCharacter>, usize)> {
+        let full_indication = " [×] ";
+        let short_indication = " × ";
+        let full_indication_len = full_indication.chars().count();
+        let short_indication_len = short_indication.chars().count();
+        if full_indication_len <= max_length {
+            Some((
+                foreground_color(full_indication, self.color),
+                full_indication_len,
+            ))
+        } else if short_indication_len <= max_length {
+            Some((
+                foreground_color(short_indication, self.color),
+                short_indication_len,
             ))
         } else {
             None
@@ -694,6 +768,27 @@ impl PaneFrame {
         ret.append(&mut right_boundary);
         ret
     }
+    fn right_only_title_line(
+        &self,
+        mut right_side: Vec<TerminalCharacter>,
+        right_side_len: &usize,
+    ) -> Vec<TerminalCharacter> {
+        let mut left_boundary =
+            foreground_color(self.get_corner(boundary_type::TOP_LEFT), self.color);
+        let mut right_boundary =
+            foreground_color(self.get_corner(boundary_type::TOP_RIGHT), self.color);
+        let total_title_length = self.geom.cols.saturating_sub(2);
+        let mut middle_padding = String::new();
+        for _ in *right_side_len..total_title_length {
+            middle_padding.push_str(boundary_type::HORIZONTAL);
+        }
+        let mut ret = vec![];
+        ret.append(&mut left_boundary);
+        ret.append(&mut foreground_color(&middle_padding, self.color));
+        ret.append(&mut right_side);
+        ret.append(&mut right_boundary);
+        ret
+    }
     fn empty_title_line(&self) -> Vec<TerminalCharacter> {
         let mut left_boundary =
             foreground_color(self.get_corner(boundary_type::TOP_LEFT), self.color);
@@ -739,16 +834,20 @@ impl PaneFrame {
     fn title_line_without_middle(&self) -> Vec<TerminalCharacter> {
         let total_title_length = self.geom.cols.saturating_sub(2); // 2 for the left and right corners
         let left_side = self.render_title_left_side(total_title_length);
-        let right_side = left_side.as_ref().and_then(|(_left_side, left_side_len)| {
-            let space_left = total_title_length.saturating_sub(*left_side_len + 1); // 1 for a middle separator
-            self.render_title_right_side(space_left)
-        });
+        let right_side_space = match &left_side {
+            Some((_, left_side_len)) => total_title_length.saturating_sub(*left_side_len + 1),
+            None => total_title_length,
+        };
+        let right_side = self.render_title_right_side(right_side_space);
         match (left_side, right_side) {
             (Some((left_side, left_side_len)), Some((right_side, right_side_len))) => {
                 self.two_part_title_line(left_side, &left_side_len, right_side, &right_side_len)
             },
             (Some((left_side, left_side_len)), None) => {
                 self.left_only_title_line(left_side, &left_side_len)
+            },
+            (None, Some((right_side, right_side_len))) => {
+                self.right_only_title_line(right_side, &right_side_len)
             },
             _ => self.empty_title_line(),
         }
@@ -1255,19 +1354,86 @@ impl PaneFrame {
         };
         Ok(res)
     }
-    pub fn clicked_on_pinned(&mut self, position: Position) -> bool {
-        if self.is_floating {
-            // TODO: this is not entirely accurate because our relative position calculation in
-            // itself isn't - when that is fixed, we should adjust this as well
-            let checkbox_center_position = self.geom.cols.saturating_sub(5);
-            let checkbox_position_start = checkbox_center_position.saturating_sub(1);
-            let checkbox_position_end = checkbox_center_position + 1;
-            if position.line() == -1
-                && (position.column() >= checkbox_position_start
-                    && position.column() <= checkbox_position_end)
-            {
-                return true;
-            }
+    fn close_indication_len(&self, max_length: usize) -> Option<usize> {
+        let full_len = " [×] ".chars().count();
+        let short_len = " × ".chars().count();
+        if full_len <= max_length {
+            Some(full_len)
+        } else if short_len <= max_length {
+            Some(short_len)
+        } else {
+            None
+        }
+    }
+    fn pin_indication_len(&self, max_length: usize) -> Option<usize> {
+        let full_len = " [ ] ".chars().count();
+        if full_len <= max_length {
+            Some(full_len)
+        } else {
+            None
+        }
+    }
+    fn right_side_button_ranges(&self) -> (Option<(usize, usize)>, Option<(usize, usize)>) {
+        if !self.is_floating || !self.is_selectable {
+            return (None, None);
+        }
+        let max_length = self.geom.cols.saturating_sub(2);
+        let has_scroll = self.scroll_position.0 > 0 || self.scroll_position.1 > 0;
+
+        let close_len = self.close_indication_len(max_length);
+        let space_after_close = close_len
+            .map(|len| {
+                let separator = if has_scroll { 1 } else { 0 };
+                max_length.saturating_sub(len + separator)
+            })
+            .unwrap_or(max_length);
+        let pin_len = self.pin_indication_len(space_after_close);
+
+        // In relative coordinates (relative to content area), the title bar is
+        // at line -1. The right corner is at column (cols - 2), and right_side
+        // content ends at column (cols - 3) (one before the corner).
+        // close is always rightmost in right_side, pin is immediately left of close.
+        // In relative coordinates, the right corner is at column (cols - 2),
+        // right_side content ends at column (cols - 3).
+        // close is always rightmost, pin is immediately left of close.
+        // Hit ranges cover only the bracket symbols [×]/[+], not surrounding spaces.
+        let rightmost_content_col = self.geom.cols.saturating_sub(3);
+        let close_range = close_len.map(|c| {
+            let indication_start = rightmost_content_col + 1 - c;
+            // " [×] " -> bracket at offset 1, length 3
+            // " × "   -> symbol at offset 1, length 1
+            let (bracket_offset, bracket_len) = if c == 5 { (1, 3) } else { (1, 1) };
+            (indication_start + bracket_offset, indication_start + bracket_offset + bracket_len - 1)
+        });
+        let pin_range = pin_len.map(|p| {
+            let pin_right = match close_len {
+                Some(c) => rightmost_content_col.saturating_sub(c),
+                None => rightmost_content_col,
+            };
+            let indication_start = pin_right + 1 - p;
+            // " [+] " -> bracket at offset 1, length 3
+            (indication_start + 1, indication_start + 3)
+        });
+
+        (pin_range, close_range)
+    }
+    pub fn clicked_on_pinned(&self, position: Position) -> bool {
+        if position.line() != -1 {
+            return false;
+        }
+        let (pin_range, _) = self.right_side_button_ranges();
+        if let Some((start, end)) = pin_range {
+            return position.column() >= start && position.column() <= end;
+        }
+        false
+    }
+    pub fn clicked_on_close(&self, position: Position) -> bool {
+        if position.line() != -1 {
+            return false;
+        }
+        let (_, close_range) = self.right_side_button_ranges();
+        if let Some((start, end)) = close_range {
+            return position.column() >= start && position.column() <= end;
         }
         false
     }

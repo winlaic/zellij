@@ -190,6 +190,9 @@ enum MouseAction {
     FrameIntercepted {
         pane_id: PaneId,
     },
+    ClosePane {
+        pane_id: PaneId,
+    },
     NoAction,
 }
 
@@ -219,6 +222,7 @@ struct ClickedPaneDetails {
     pane_id: PaneId,
     on_frame: bool,
     frame_intercepted: bool,
+    clicked_on_close: bool,
     edge: Option<PaneEdge>,
     is_floating: bool,
     terminal_wants_mouse: bool,
@@ -498,6 +502,11 @@ impl MouseHandler {
 
         let on_frame = !is_hidden_stack_list_member && pane.position_is_on_frame(position);
         let frame_intercepted = on_frame && pane.intercept_mouse_event_on_frame(event, client_id);
+        let clicked_on_close = if on_frame && is_floating {
+            pane.clicked_on_close_button(position, client_id)
+        } else {
+            false
+        };
         let edge = if on_frame {
             pane.get_edge_at_position(position)
         } else {
@@ -514,6 +523,7 @@ impl MouseHandler {
             pane_id,
             on_frame,
             frame_intercepted,
+            clicked_on_close,
             edge,
             is_floating,
             terminal_wants_mouse,
@@ -889,6 +899,10 @@ impl MouseHandler {
             },
             MouseAction::FrameIntercepted { pane_id: _ } => {
                 tab.set_force_render();
+                Ok(MouseEffect::state_changed())
+            },
+            MouseAction::ClosePane { pane_id } => {
+                tab.close_pane(pane_id, false, None);
                 Ok(MouseEffect::state_changed())
             },
             MouseAction::NoAction => Ok(MouseEffect::default()),
@@ -1473,6 +1487,12 @@ impl MouseHandler {
                 .unwrap_or(false);
 
             if details.on_frame {
+                if details.clicked_on_close {
+                    return Ok(MouseAction::ClosePane {
+                        pane_id: details.pane_id,
+                    });
+                }
+
                 if details.frame_intercepted {
                     return Ok(MouseAction::FrameIntercepted {
                         pane_id: details.pane_id,

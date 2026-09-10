@@ -1252,7 +1252,7 @@ impl Pane for TerminalPane {
     fn intercept_left_mouse_click(&mut self, position: &Position, client_id: ClientId) -> bool {
         if self.position_is_on_frame(position) {
             let relative_position = self.relative_position(position);
-            if let Some(client_frame) = self.frame.get_mut(&client_id) {
+            if let Some(client_frame) = self.frame.get(&client_id) {
                 if client_frame.clicked_on_pinned(relative_position) {
                     self.toggle_pinned();
                     return true;
@@ -1265,12 +1265,21 @@ impl Pane for TerminalPane {
         if self.position_is_on_frame(&event.position) {
             let relative_position = self.relative_position(&event.position);
             if let MouseEventType::Press = event.event_type {
-                if let Some(client_frame) = self.frame.get_mut(&client_id) {
+                if let Some(client_frame) = self.frame.get(&client_id) {
                     if client_frame.clicked_on_pinned(relative_position) {
                         self.toggle_pinned();
                         return true;
                     }
                 }
+            }
+        }
+        false
+    }
+    fn clicked_on_close_button(&self, position: &Position, client_id: ClientId) -> bool {
+        if self.position_is_on_frame(position) {
+            let relative_position = self.relative_position(position);
+            if let Some(client_frame) = self.frame.get(&client_id) {
+                return client_frame.clicked_on_close(relative_position);
             }
         }
         false

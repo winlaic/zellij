@@ -800,6 +800,9 @@ pub trait Pane {
     fn terminal_emulator_wants_mouse(&self) -> bool {
         false
     }
+    fn clicked_on_close_button(&self, _position: &Position, _client_id: ClientId) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
