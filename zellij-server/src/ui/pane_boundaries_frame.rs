@@ -229,100 +229,78 @@ impl PaneFrame {
         &self,
         max_length: usize,
     ) -> Option<(Vec<TerminalCharacter>, usize)> {
-        // string and length because of color
         let has_scroll = self.scroll_position.0 > 0 || self.scroll_position.1 > 0;
-        if has_scroll && self.is_selectable {
-            // TODO: don't show SCROLL at all for plugins
-            let close_indication = if self.is_floating && self.is_selectable {
-                self.render_close_indication(max_length)
-            } else {
-                None
-            };
-            let space_after_close = close_indication
-                .as_ref()
-                .map(|(_, length)| max_length.saturating_sub(*length + 1))
-                .unwrap_or(max_length);
-            let pin_indication = if self.is_floating && self.is_selectable {
-                self.render_pinned_indication(space_after_close)
-            } else {
-                None
-            }; // no pin indication for tiled panes
-            let space_for_scroll_indication = match (&pin_indication, &close_indication) {
-                (Some((_, pin_len)), Some((_, close_len))) => {
-                    max_length.saturating_sub(*pin_len + *close_len + 2)
-                },
-                (Some((_, pin_len)), None) => max_length.saturating_sub(*pin_len + 1),
-                (None, Some((_, close_len))) => max_length.saturating_sub(*close_len + 1),
-                (None, None) => max_length,
-            };
-            let scroll_indication = self.render_scroll_indication(space_for_scroll_indication);
-            match (close_indication, pin_indication, scroll_indication) {
-                (
-                    Some((mut close_indication, close_indication_len)),
-                    Some((mut pin_indication, pin_indication_len)),
-                    Some((mut scroll_indication, scroll_indication_len)),
-                ) => {
-                    let mut characters: Vec<_> = scroll_indication.drain(..).collect();
-                    let mut separator = foreground_color(&format!("|"), self.color);
-                    characters.append(&mut separator);
-                    characters.append(&mut pin_indication);
-                    characters.append(&mut close_indication);
-                    Some((
-                        characters,
-                        close_indication_len + pin_indication_len + scroll_indication_len + 1,
-                    ))
-                },
-                (Some((close_indication, close_indication_len)), Some((pin_indication, pin_indication_len)), None) => {
-                    let mut characters = pin_indication;
-                    characters.extend(close_indication);
-                    Some((characters, close_indication_len + pin_indication_len))
-                },
-                (Some((mut close_indication, close_indication_len)), None, Some((mut scroll_indication, scroll_indication_len))) => {
-                    let mut characters: Vec<_> = scroll_indication.drain(..).collect();
-                    let mut separator = foreground_color(&format!("|"), self.color);
-                    characters.append(&mut separator);
-                    characters.append(&mut close_indication);
-                    Some((characters, close_indication_len + scroll_indication_len + 1))
-                },
-                (Some(close_indication), None, None) => Some(close_indication),
-                (None, Some((mut pin_indication, pin_indication_len)), Some((mut scroll_indication, scroll_indication_len))) => {
-                    let mut characters: Vec<_> = scroll_indication.drain(..).collect();
-                    let mut separator = foreground_color(&format!("|"), self.color);
-                    characters.append(&mut separator);
-                    characters.append(&mut pin_indication);
-                    Some((characters, pin_indication_len + scroll_indication_len + 1))
-                },
-                (None, Some(pin_indication), None) => Some(pin_indication),
-                (None, None, Some(scroll_indication)) => Some(scroll_indication),
-                _ => None,
-            }
-        } else if self.is_floating && self.is_selectable {
-            let close_indication = self.render_close_indication(max_length);
-            let space_after_close = close_indication
-                .as_ref()
-                .map(|(_, length)| max_length.saturating_sub(*length))
-                .unwrap_or(max_length);
-            let pin_indication = self.render_pinned_indication(space_after_close);
-            match (close_indication, pin_indication) {
-                (Some((mut close_indication, close_len)), Some((mut pin_indication, pin_len))) => {
-                    pin_indication.append(&mut close_indication);
-                    Some((pin_indication, close_len + pin_len))
-                },
-                (Some(close_indication), None) => Some(close_indication),
-                (None, Some(pin_indication)) => Some(pin_indication),
-                _ => None,
-            }
+        let is_floating_selectable = self.is_floating && self.is_selectable;
+        let button_sep = " ";
+        let scroll_sep = " | ";
+
+        let close = if is_floating_selectable {
+            self.render_close_indication(max_length)
         } else {
             None
+        };
+        let close_space = close.as_ref().map(|(_, l)| *l).unwrap_or(0);
+
+        let pin_budget = max_length.saturating_sub(
+            close_space + if close.is_some() { button_sep.len() } else { 0 },
+        );
+        let pin = if is_floating_selectable {
+            self.render_pinned_indication(pin_budget)
+        } else {
+            None
+        };
+        let pin_space = pin.as_ref().map(|(_, l)| *l).unwrap_or(0);
+
+        let buttons_len = close_space
+            + pin_space
+            + if close.is_some() && pin.is_some() { button_sep.len() } else { 0 };
+
+        let scroll = if has_scroll && self.is_selectable {
+            let scroll_budget = max_length.saturating_sub(
+                buttons_len + if buttons_len > 0 { scroll_sep.len() } else { 0 },
+            );
+            self.render_scroll_indication(scroll_budget)
+        } else {
+            None
+        };
+
+        if scroll.is_none() && pin.is_none() && close.is_none() {
+            return None;
         }
+
+        let mut chars: Vec<TerminalCharacter> = Vec::new();
+        let mut total_len: usize = 0;
+
+        if let Some((scroll_chars, scroll_len)) = scroll {
+            chars.extend(scroll_chars);
+            total_len += scroll_len;
+            if buttons_len > 0 {
+                chars.append(&mut foreground_color(scroll_sep, self.color));
+                total_len += scroll_sep.len();
+            }
+        }
+        if let Some((pin_chars, pin_len)) = pin {
+            chars.extend(pin_chars);
+            total_len += pin_len;
+            if close.is_some() {
+                chars.append(&mut foreground_color(button_sep, self.color));
+                total_len += button_sep.len();
+            }
+        }
+        if let Some((close_chars, close_len)) = close {
+            chars.extend(close_chars);
+            total_len += close_len;
+        }
+
+        Some((chars, total_len))
     }
     fn render_scroll_indication(
         &self,
         max_length: usize,
     ) -> Option<(Vec<TerminalCharacter>, usize)> {
-        let prefix = " SCROLL: ";
-        let full_indication = format!(" {}/{} ", self.scroll_position.0, self.scroll_position.1);
-        let short_indication = format!(" {} ", self.scroll_position.0);
+        let prefix = "SCROLL: ";
+        let full_indication = format!("{}/{}", self.scroll_position.0, self.scroll_position.1);
+        let short_indication = format!("{}", self.scroll_position.0);
         let full_indication_len = full_indication.chars().count();
         let short_indication_len = short_indication.chars().count();
         let prefix_len = prefix.chars().count();
@@ -350,7 +328,7 @@ impl PaneFrame {
         max_length: usize,
     ) -> Option<(Vec<TerminalCharacter>, usize)> {
         let is_checked = if self.is_pinned { '+' } else { ' ' };
-        let full_indication = format!(" [{}] ", is_checked);
+        let full_indication = format!("[{}]", is_checked);
         let full_indication_len = full_indication.chars().count();
         if full_indication_len <= max_length {
             Some((
@@ -365,8 +343,8 @@ impl PaneFrame {
         &self,
         max_length: usize,
     ) -> Option<(Vec<TerminalCharacter>, usize)> {
-        let full_indication = " [×] ";
-        let short_indication = " × ";
+        let full_indication = "[×]";
+        let short_indication = "×";
         let full_indication_len = full_indication.chars().count();
         let short_indication_len = short_indication.chars().count();
         if full_indication_len <= max_length {
@@ -1355,8 +1333,8 @@ impl PaneFrame {
         Ok(res)
     }
     fn close_indication_len(&self, max_length: usize) -> Option<usize> {
-        let full_len = " [×] ".chars().count();
-        let short_len = " × ".chars().count();
+        let full_len = "[×]".chars().count();
+        let short_len = "×".chars().count();
         if full_len <= max_length {
             Some(full_len)
         } else if short_len <= max_length {
@@ -1366,7 +1344,7 @@ impl PaneFrame {
         }
     }
     fn pin_indication_len(&self, max_length: usize) -> Option<usize> {
-        let full_len = " [ ] ".chars().count();
+        let full_len = "[ ]".chars().count();
         if full_len <= max_length {
             Some(full_len)
         } else {
@@ -1378,41 +1356,27 @@ impl PaneFrame {
             return (None, None);
         }
         let max_length = self.geom.cols.saturating_sub(2);
-        let has_scroll = self.scroll_position.0 > 0 || self.scroll_position.1 > 0;
+        let button_sep_len = 1; // " " between buttons
 
         let close_len = self.close_indication_len(max_length);
         let space_after_close = close_len
-            .map(|len| {
-                let separator = if has_scroll { 1 } else { 0 };
-                max_length.saturating_sub(len + separator)
-            })
+            .map(|len| max_length.saturating_sub(len + button_sep_len))
             .unwrap_or(max_length);
         let pin_len = self.pin_indication_len(space_after_close);
 
-        // In relative coordinates (relative to content area), the title bar is
-        // at line -1. The right corner is at column (cols - 2), and right_side
-        // content ends at column (cols - 3) (one before the corner).
-        // close is always rightmost in right_side, pin is immediately left of close.
-        // In relative coordinates, the right corner is at column (cols - 2),
-        // right_side content ends at column (cols - 3).
-        // close is always rightmost, pin is immediately left of close.
-        // Hit ranges cover only the bracket symbols [×]/[+], not surrounding spaces.
         let rightmost_content_col = self.geom.cols.saturating_sub(3);
+
         let close_range = close_len.map(|c| {
-            let indication_start = rightmost_content_col + 1 - c;
-            // " [×] " -> bracket at offset 1, length 3
-            // " × "   -> symbol at offset 1, length 1
-            let (bracket_offset, bracket_len) = if c == 5 { (1, 3) } else { (1, 1) };
-            (indication_start + bracket_offset, indication_start + bracket_offset + bracket_len - 1)
+            let start = (rightmost_content_col + 1).saturating_sub(c);
+            (start, rightmost_content_col)
         });
         let pin_range = pin_len.map(|p| {
             let pin_right = match close_len {
-                Some(c) => rightmost_content_col.saturating_sub(c),
+                Some(c) => rightmost_content_col.saturating_sub(c + button_sep_len),
                 None => rightmost_content_col,
             };
-            let indication_start = pin_right + 1 - p;
-            // " [+] " -> bracket at offset 1, length 3
-            (indication_start + 1, indication_start + 3)
+            let pin_start = (pin_right + 1).saturating_sub(p);
+            (pin_start, pin_right)
         });
 
         (pin_range, close_range)
